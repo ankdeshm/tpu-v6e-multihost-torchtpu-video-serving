@@ -1,0 +1,235 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: v6e-16-video-bench-spot-svc
+  namespace: default
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    job-name: v6e-16-torchtpu-video-bench-spot
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: v6e-16-video-http
+  namespace: default
+spec:
+  selector:
+    job-name: v6e-16-torchtpu-video-bench-spot
+    batch.kubernetes.io/job-completion-index: "0"
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: v6e-16-torchtpu-video-bench-spot
+  namespace: default
+spec:
+  completions: 4
+  parallelism: 4
+  completionMode: Indexed
+  backoffLimit: 12
+  template:
+    metadata:
+      labels:
+        app: v6e-16-torchtpu-video-bench-spot
+      annotations:
+        gke-gcsfuse/volumes: "true"
+        gke-gcsfuse/memory-limit: "0"
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      serviceAccountName: default
+      priorityClassName: tpu-serving-workload
+      subdomain: v6e-16-video-bench-spot-svc
+      terminationGracePeriodSeconds: 10
+      restartPolicy: OnFailure
+      nodeSelector:
+        cloud.google.com/gke-nodepool: tpu-v6e-16-spot-pool
+        cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+        cloud.google.com/gke-tpu-topology: 4x4
+      tolerations:
+      - key: google.com/tpu
+        operator: Exists
+        effect: NoSchedule
+      - key: cloud.google.com/gke-spot
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: server
+        image: us-central1-docker.pkg.dev/YOUR_GCP_PROJECT_ID/torchtpu/torchtitan-flint:v0.2.0
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/bash", "-lc"]
+        args:
+        - |
+          set -euo pipefail
+          export NODE_RANK="${JOB_COMPLETION_INDEX}"
+          export MASTER_ADDR="v6e-16-torchtpu-video-bench-spot-0.v6e-16-video-bench-spot-svc.default.svc.cluster.local"
+          export MASTER_PORT="29500"
+          exec torchrun \
+            --nnodes=4 \
+            --nproc_per_node=4 \
+            --node_rank="${NODE_RANK}" \
+            --rdzv_backend=c10d \
+            --rdzv_endpoint="${MASTER_ADDR}:${MASTER_PORT}" \
+            /scripts/run_v6e_multihost_video_serving.py \
+            --mode=benchmark \
+            --models=wan2.2,ltx2.3 \
+            --precisions=bf16,fp8 \
+            --slice-name=v6e-16-4x4-spot \
+            --model-root=/models/models \
+            --output-dir=/models/video-serving-results \
+            --steps=8 \
+            --keep-warm-after-benchmark
+        env:
+        - name: PJRT_DEVICE
+          value: "TPU"
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            google.com/tpu: "4"
+          limits:
+            google.com/tpu: "4"
+        volumeMounts:
+        - name: model-weights
+          mountPath: /models
+        - name: video-script
+          mountPath: /scripts
+        - name: dshm
+          mountPath: /dev/shm
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+      - name: model-weights
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: YOUR_GCS_BUCKET
+            mountOptions: "implicit-dirs"
+      - name: video-script
+        configMap:
+          name: v6e-multihost-video-serving-script
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: v6e-32-video-bench-spot-svc
+  namespace: default
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    job-name: v6e-32-torchtpu-video-bench-spot
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: v6e-32-video-http
+  namespace: default
+spec:
+  selector:
+    job-name: v6e-32-torchtpu-video-bench-spot
+    batch.kubernetes.io/job-completion-index: "0"
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: v6e-32-torchtpu-video-bench-spot
+  namespace: default
+spec:
+  completions: 8
+  parallelism: 8
+  completionMode: Indexed
+  backoffLimit: 12
+  template:
+    metadata:
+      labels:
+        app: v6e-32-torchtpu-video-bench-spot
+      annotations:
+        gke-gcsfuse/volumes: "true"
+        gke-gcsfuse/memory-limit: "0"
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      serviceAccountName: default
+      priorityClassName: tpu-serving-workload
+      subdomain: v6e-32-video-bench-spot-svc
+      terminationGracePeriodSeconds: 10
+      restartPolicy: OnFailure
+      nodeSelector:
+        cloud.google.com/gke-nodepool: tpu-v6e-32-spot-pool
+        cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+        cloud.google.com/gke-tpu-topology: 4x8
+      tolerations:
+      - key: google.com/tpu
+        operator: Exists
+        effect: NoSchedule
+      - key: cloud.google.com/gke-spot
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: server
+        image: us-central1-docker.pkg.dev/YOUR_GCP_PROJECT_ID/torchtpu/torchtitan-flint:v0.2.0
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/bash", "-lc"]
+        args:
+        - |
+          set -euo pipefail
+          export NODE_RANK="${JOB_COMPLETION_INDEX}"
+          export MASTER_ADDR="v6e-32-torchtpu-video-bench-spot-0.v6e-32-video-bench-spot-svc.default.svc.cluster.local"
+          export MASTER_PORT="29500"
+          exec torchrun \
+            --nnodes=8 \
+            --nproc_per_node=4 \
+            --node_rank="${NODE_RANK}" \
+            --rdzv_backend=c10d \
+            --rdzv_endpoint="${MASTER_ADDR}:${MASTER_PORT}" \
+            /scripts/run_v6e_multihost_video_serving.py \
+            --mode=benchmark \
+            --models=wan2.2,ltx2.3 \
+            --precisions=bf16,fp8 \
+            --slice-name=v6e-32-4x8-spot \
+            --model-root=/models/models \
+            --output-dir=/models/video-serving-results \
+            --steps=8 \
+            --keep-warm-after-benchmark
+        env:
+        - name: PJRT_DEVICE
+          value: "TPU"
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            google.com/tpu: "4"
+          limits:
+            google.com/tpu: "4"
+        volumeMounts:
+        - name: model-weights
+          mountPath: /models
+        - name: video-script
+          mountPath: /scripts
+        - name: dshm
+          mountPath: /dev/shm
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+      - name: model-weights
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: YOUR_GCS_BUCKET
+            mountOptions: "implicit-dirs"
+      - name: video-script
+        configMap:
+          name: v6e-multihost-video-serving-script
