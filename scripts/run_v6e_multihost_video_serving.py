@@ -67,32 +67,27 @@ def log_rank0(msg: str) -> None:
 
 
 def get_tpu_device() -> torch.device:
-    if HAS_TORCH_TPU and hasattr(torch, "tpu") and torch.tpu.is_available():
-        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-        torch.tpu.set_device(local_rank)
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if HAS_TORCH_TPU and hasattr(torch, "accelerator"):
+        torch.accelerator.set_device_index(local_rank)
         return torch.device(f"tpu:{local_rank}")
     if torch.cuda.is_available():
-        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
         torch.cuda.set_device(local_rank)
         return torch.device(f"cuda:{local_rank}")
     return torch.device("cpu")
 
 
 def sync_device(device: torch.device) -> None:
-    if device.type == "tpu" and hasattr(torch, "tpu"):
-        torch.tpu.synchronize()
+    if device.type == "tpu" and hasattr(torch, "accelerator"):
+        torch.accelerator.synchronize()
     elif device.type == "cuda":
         torch.cuda.synchronize()
 
 
 def peak_memory_gib(device: torch.device) -> float:
-    if device.type == "tpu" and hasattr(torch, "tpu"):
+    if device.type == "tpu" and hasattr(torch, "accelerator"):
         try:
-            stats = torch.tpu.memory_stats(device)
-            peak = stats.get("bytes_in_use.peak", stats.get("allocated_bytes.all.peak", 0))
-            if peak:
-                return float(peak) / (1024.0 ** 3)
-            return float(torch.tpu.max_memory_allocated(device)) / (1024.0 ** 3)
+            return float(torch.accelerator.max_memory_allocated(device)) / (1024.0 ** 3)
         except Exception:
             return 0.0
     if device.type == "cuda":
@@ -113,13 +108,13 @@ def wait_for_master_dns(master_addr: str, timeout_s: int = 300) -> None:
 def init_distributed() -> tuple[int, int, int, torch.device]:
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
     wait_for_master_dns(master_addr)
-    device = get_tpu_device()
     if not dist.is_initialized():
-        backend = "tpu" if device.type == "tpu" else ("nccl" if device.type == "cuda" else "gloo")
+        backend = "tpu" if HAS_TORCH_TPU else ("nccl" if torch.cuda.is_available() else "gloo")
         try:
             dist.init_process_group(backend=backend, timeout=dt.timedelta(minutes=30))
         except Exception:
             dist.init_process_group(backend="gloo", timeout=dt.timedelta(minutes=30))
+    device = get_tpu_device()
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
