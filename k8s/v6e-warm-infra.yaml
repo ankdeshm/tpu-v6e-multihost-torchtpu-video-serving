@@ -1,0 +1,511 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: tpu-warm-holder
+value: -100
+globalDefault: false
+description: "Low-priority warm-holder pods that trigger Spot/Flex autoscaling and yield immediately to real TPU workloads."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: tpu-serving-workload
+value: 1000
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+description: "High-priority TPU serving workloads that immediately preempt tpu-warm-holder pods."
+---
+# Zero-TPU DaemonSet that locks every provisioned v6e node in us-east5-b against scale-down
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pin-v6e-eb-nodes
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: pin-v6e-eb-nodes
+  template:
+    metadata:
+      labels:
+        app: pin-v6e-eb-nodes
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: cloud.google.com/gke-nodepool
+                operator: In
+                values:
+                - tpu-v6e-32-spot-pool
+                - tpu-v6e-16-spot-pool
+                - tpu-v6e-32-flex-pool
+                - tpu-v6e-16-flex-pool
+      tolerations:
+      - key: google.com/tpu
+        operator: Exists
+        effect: NoSchedule
+      - key: cloud.google.com/gke-queued
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.9
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
+---
+# Continuous Spot capacity trigger & holder for 32-chip (4x8) v6e in us-east5-b
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warm-hold-v6e-32-spot-eb
+  namespace: default
+spec:
+  replicas: 8
+  selector:
+    matchLabels:
+      app: warm-hold-v6e-32-spot-eb
+  template:
+    metadata:
+      labels:
+        app: warm-hold-v6e-32-spot-eb
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      priorityClassName: tpu-warm-holder
+      nodeSelector:
+        cloud.google.com/gke-nodepool: tpu-v6e-32-spot-pool
+        cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+        cloud.google.com/gke-tpu-topology: 4x8
+      tolerations:
+      - key: google.com/tpu
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: holder
+        image: registry.k8s.io/pause:3.9
+        resources:
+          requests:
+            google.com/tpu: "4"
+          limits:
+            google.com/tpu: "4"
+---
+# Continuous Spot capacity trigger & holder for 16-chip (4x4) v6e in us-east5-b
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warm-hold-v6e-16-spot-eb
+  namespace: default
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: warm-hold-v6e-16-spot-eb
+  template:
+    metadata:
+      labels:
+        app: warm-hold-v6e-16-spot-eb
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      priorityClassName: tpu-warm-holder
+      nodeSelector:
+        cloud.google.com/gke-nodepool: tpu-v6e-16-spot-pool
+        cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+        cloud.google.com/gke-tpu-topology: 4x4
+      tolerations:
+      - key: google.com/tpu
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: holder
+        image: registry.k8s.io/pause:3.9
+        resources:
+          requests:
+            google.com/tpu: "4"
+          limits:
+            google.com/tpu: "4"
+---
+# PodTemplate + Initial 7-Day (604800s) ProvisioningRequest for 32-chip (4x8) Flex-Start
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: tpu-v6e-32-flex-eb-template
+  namespace: default
+template:
+  metadata:
+    annotations:
+      cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+  spec:
+    priorityClassName: tpu-warm-holder
+    nodeSelector:
+      cloud.google.com/gke-nodepool: tpu-v6e-32-flex-pool
+      cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+      cloud.google.com/gke-tpu-topology: 4x8
+    tolerations:
+    - key: google.com/tpu
+      operator: Exists
+      effect: NoSchedule
+    - key: cloud.google.com/gke-queued
+      operator: Exists
+      effect: NoSchedule
+    containers:
+    - name: pause
+      image: registry.k8s.io/pause:3.9
+      resources:
+        requests:
+          google.com/tpu: "4"
+          memory: 32Gi
+        limits:
+          google.com/tpu: "4"
+          memory: 32Gi
+---
+apiVersion: autoscaling.x-k8s.io/v1
+kind: ProvisioningRequest
+metadata:
+  name: tpu-v6e-32-flex-eb-pr
+  namespace: default
+spec:
+  provisioningClassName: queued-provisioning.gke.io
+  parameters:
+    maxRunDurationSeconds: "604800"
+  podSets:
+  - count: 8
+    podTemplateRef:
+      name: tpu-v6e-32-flex-eb-template
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warm-hold-v6e-32-flex-eb
+  namespace: default
+spec:
+  replicas: 8
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: warm-hold-v6e-32-flex-eb
+  template:
+    metadata:
+      labels:
+        app: warm-hold-v6e-32-flex-eb
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        cluster-autoscaler.kubernetes.io/consume-provisioning-request: tpu-v6e-32-flex-eb-pr
+        cluster-autoscaler.kubernetes.io/provisioning-class-name: queued-provisioning.gke.io
+    spec:
+      priorityClassName: tpu-warm-holder
+      nodeSelector:
+        cloud.google.com/gke-nodepool: tpu-v6e-32-flex-pool
+        cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+        cloud.google.com/gke-tpu-topology: 4x8
+      tolerations:
+      - key: google.com/tpu
+        operator: Exists
+        effect: NoSchedule
+      - key: cloud.google.com/gke-queued
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.9
+        resources:
+          requests:
+            google.com/tpu: "4"
+            memory: 32Gi
+          limits:
+            google.com/tpu: "4"
+            memory: 32Gi
+---
+# PodTemplate + Initial 7-Day (604800s) ProvisioningRequest for 16-chip (4x4) Flex-Start
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: tpu-v6e-16-flex-eb-template
+  namespace: default
+template:
+  metadata:
+    annotations:
+      cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+  spec:
+    priorityClassName: tpu-warm-holder
+    nodeSelector:
+      cloud.google.com/gke-nodepool: tpu-v6e-16-flex-pool
+      cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+      cloud.google.com/gke-tpu-topology: 4x4
+    tolerations:
+    - key: google.com/tpu
+      operator: Exists
+      effect: NoSchedule
+    - key: cloud.google.com/gke-queued
+      operator: Exists
+      effect: NoSchedule
+    containers:
+    - name: pause
+      image: registry.k8s.io/pause:3.9
+      resources:
+        requests:
+          google.com/tpu: "4"
+          memory: 32Gi
+        limits:
+          google.com/tpu: "4"
+          memory: 32Gi
+---
+apiVersion: autoscaling.x-k8s.io/v1
+kind: ProvisioningRequest
+metadata:
+  name: tpu-v6e-16-flex-eb-pr
+  namespace: default
+spec:
+  provisioningClassName: queued-provisioning.gke.io
+  parameters:
+    maxRunDurationSeconds: "604800"
+  podSets:
+  - count: 4
+    podTemplateRef:
+      name: tpu-v6e-16-flex-eb-template
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warm-hold-v6e-16-flex-eb
+  namespace: default
+spec:
+  replicas: 4
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: warm-hold-v6e-16-flex-eb
+  template:
+    metadata:
+      labels:
+        app: warm-hold-v6e-16-flex-eb
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+        cluster-autoscaler.kubernetes.io/consume-provisioning-request: tpu-v6e-16-flex-eb-pr
+        cluster-autoscaler.kubernetes.io/provisioning-class-name: queued-provisioning.gke.io
+    spec:
+      priorityClassName: tpu-warm-holder
+      nodeSelector:
+        cloud.google.com/gke-nodepool: tpu-v6e-16-flex-pool
+        cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+        cloud.google.com/gke-tpu-topology: 4x4
+      tolerations:
+      - key: google.com/tpu
+        operator: Exists
+        effect: NoSchedule
+      - key: cloud.google.com/gke-queued
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.9
+        resources:
+          requests:
+            google.com/tpu: "4"
+            memory: 32Gi
+          limits:
+            google.com/tpu: "4"
+            memory: 32Gi
+---
+# Cascading Flex-Start Duration Controller: 7d (604800s) -> 4d (345600s) -> 3d (259200s) -> 2d (172800s)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flex-cascade-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: flex-cascade-role
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "pods", "podtemplates"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "patch", "update"]
+- apiGroups: ["autoscaling.x-k8s.io"]
+  resources: ["provisioningrequests"]
+  verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: flex-cascade-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: flex-cascade-role
+subjects:
+- kind: ServiceAccount
+  name: flex-cascade-sa
+  namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flex-cascade-controller
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flex-cascade-controller
+  template:
+    metadata:
+      labels:
+        app: flex-cascade-controller
+    spec:
+      serviceAccountName: flex-cascade-sa
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      containers:
+      - name: controller
+        image: python:3.11-slim
+        command: ["python3", "-u", "-c"]
+        args:
+        - |
+          import datetime, json, ssl, time, urllib.error, urllib.request
+
+          DURATIONS = [
+              ("7d", 604800, 1200),  # Try 7 days for 20 min (or immediate fallback on BookingFailed)
+              ("4d", 345600, 1200),  # Try 4 days for 20 min
+              ("3d", 259200, 1200),  # Try 3 days for 20 min
+              ("2d", 172800, 2400),  # Try 2 days for 40 min, then cycle back / retry if needed
+          ]
+
+          TARGETS = [
+              {
+                  "pool": "tpu-v6e-32-flex-pool",
+                  "pr_prefix": "tpu-v6e-32-flex-eb-pr",
+                  "template": "tpu-v6e-32-flex-eb-template",
+                  "deploy": "warm-hold-v6e-32-flex-eb",
+                  "count": 8,
+              },
+              {
+                  "pool": "tpu-v6e-16-flex-pool",
+                  "pr_prefix": "tpu-v6e-16-flex-eb-pr",
+                  "template": "tpu-v6e-16-flex-eb-template",
+                  "deploy": "warm-hold-v6e-16-flex-eb",
+                  "count": 4,
+              },
+          ]
+
+          API = "https://kubernetes.default.svc"
+          CTX = ssl.create_default_context(cafile="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+
+          def k8s_req(method, path, body=None, content_type="application/json"):
+              token = open("/var/run/secrets/kubernetes.io/serviceaccount/token").read().strip()
+              data = json.dumps(body).encode() if body is not None else None
+              req = urllib.request.Request(
+                  API + path,
+                  data=data,
+                  method=method,
+                  headers={"Authorization": f"Bearer {token}", "Content-Type": content_type},
+              )
+              with urllib.request.urlopen(req, context=CTX, timeout=20) as resp:
+                  raw = resp.read().decode()
+                  return json.loads(raw) if raw else {}
+
+          def pool_node_count(pool_name):
+              nodes = k8s_req("GET", f"/api/v1/nodes?labelSelector=cloud.google.com/gke-nodepool%3D{pool_name}")
+              return len(nodes.get("items", []))
+
+          def get_active_pr(prefix):
+              prs = k8s_req("GET", "/apis/autoscaling.x-k8s.io/v1/namespaces/default/provisioningrequests")
+              matches = [x for x in prs.get("items", []) if x["metadata"]["name"].startswith(prefix)]
+              matches.sort(key=lambda x: x["metadata"]["creationTimestamp"], reverse=True)
+              return matches[0] if matches else None
+
+          def create_pr(t, label, dur_sec):
+              ts = int(time.time())
+              pr_name = f"{t['pr_prefix']}-{label}-{ts}"
+              manifest = {
+                  "apiVersion": "autoscaling.x-k8s.io/v1",
+                  "kind": "ProvisioningRequest",
+                  "metadata": {"name": pr_name, "namespace": "default"},
+                  "spec": {
+                      "provisioningClassName": "queued-provisioning.gke.io",
+                      "parameters": {"maxRunDurationSeconds": str(dur_sec)},
+                      "podSets": [{"count": t["count"], "podTemplateRef": {"name": t["template"]}}],
+                  },
+              }
+              k8s_req("POST", "/apis/autoscaling.x-k8s.io/v1/namespaces/default/provisioningrequests", manifest)
+              patch = {
+                  "spec": {
+                      "template": {
+                          "metadata": {
+                              "annotations": {
+                                  "cluster-autoscaler.kubernetes.io/consume-provisioning-request": pr_name,
+                                  "cluster-autoscaler.kubernetes.io/provisioning-class-name": "queued-provisioning.gke.io",
+                                  "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
+                              }
+                          }
+                      }
+                  }
+              }
+              k8s_req("PATCH", f"/apis/apps/v1/namespaces/default/deployments/{t['deploy']}", patch, "application/merge-patch+json")
+              print(f"[{datetime.datetime.utcnow().isoformat()}Z] Created {pr_name} ({label}={dur_sec}s) for {t['pool']}", flush=True)
+
+          step_idx = {t["pool"]: 0 for t in TARGETS}
+          print("Starting Flex-Start cascading controller (7d -> 4d -> 3d -> 2d)...", flush=True)
+          while True:
+              for t in TARGETS:
+                  try:
+                      ncount = pool_node_count(t["pool"])
+                      if ncount >= t["count"]:
+                          print(f"[{datetime.datetime.utcnow().isoformat()}Z] {t['pool']} SECURED ({ncount}/{t['count']} nodes)! Keeping warm.", flush=True)
+                          continue
+                      pr = get_active_pr(t["pr_prefix"])
+                      if pr is None:
+                          lbl, dur, _ = DURATIONS[step_idx[t["pool"]]]
+                          create_pr(t, lbl, dur)
+                          continue
+                      pr_name = pr["metadata"]["name"]
+                      cur_dur = int(pr["spec"].get("parameters", {}).get("maxRunDurationSeconds", "604800"))
+                      conds = {c["type"]: c for c in pr.get("status", {}).get("conditions", [])}
+                      prov = conds.get("Provisioned", {}).get("status") == "True"
+                      failed = conds.get("Failed", {}).get("status") == "True" or conds.get("BookingFailed", {}).get("status") == "True"
+                      accepted_cond = conds.get("Accepted", {})
+                      not_accepted = accepted_cond.get("status") == "False"
+                      ctime = datetime.datetime.strptime(pr["metadata"]["creationTimestamp"], "%Y-%m-%dT%H:%M:%SZ")
+                      age_s = (datetime.datetime.utcnow() - ctime).total_seconds()
+
+                      cur_i = next((i for i, (_, d, _) in enumerate(DURATIONS) if d == cur_dur), 0)
+                      lbl, _, wait_s = DURATIONS[cur_i]
+                      print(f"[{datetime.datetime.utcnow().isoformat()}Z] {t['pool']}: pr={pr_name} dur={cur_dur}s ({lbl}) age={int(age_s)}s prov={prov} failed={failed}", flush=True)
+                      if prov:
+                          continue
+                      if failed or not_accepted or age_s >= wait_s:
+                          next_i = (cur_i + 1) % len(DURATIONS)
+                          step_idx[t["pool"]] = next_i
+                          nlbl, ndur, _ = DURATIONS[next_i]
+                          print(f"[{datetime.datetime.utcnow().isoformat()}Z] Cascading {t['pool']} from {lbl} ({cur_dur}s) -> {nlbl} ({ndur}s)...", flush=True)
+                          try:
+                              k8s_req("DELETE", f"/apis/autoscaling.x-k8s.io/v1/namespaces/default/provisioningrequests/{pr_name}")
+                          except urllib.error.HTTPError:
+                              pass
+                          time.sleep(5)
+                          create_pr(t, nlbl, ndur)
+                  except Exception as e:
+                      print(f"[WARN] Error checking {t['pool']}: {e}", flush=True)
+              time.sleep(120)
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi

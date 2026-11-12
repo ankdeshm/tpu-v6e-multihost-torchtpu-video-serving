@@ -1,0 +1,226 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stage-hf-wan22-i2v-a14b
+  namespace: default
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      annotations:
+        gke-gcsfuse/volumes: "true"
+        gke-gcsfuse/memory-limit: "0"
+    spec:
+      serviceAccountName: default
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      restartPolicy: OnFailure
+      containers:
+      - name: downloader
+        image: python:3.11-slim
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          pip install -q -U "huggingface_hub[hf_transfer]" filelock
+          export HF_HUB_ENABLE_HF_TRANSFER=1
+          python3 -u -c '
+          import filelock, os, time
+          class DummyLock:
+              def __init__(self, *args, **kwargs): pass
+              def __enter__(self): return self
+              def __exit__(self, *args): pass
+              def acquire(self, *args, **kwargs): pass
+              def release(self, *args, **kwargs): pass
+          filelock.FileLock = DummyLock
+          filelock.SoftFileLock = DummyLock
+          from huggingface_hub import snapshot_download
+          t0 = time.time()
+          print("Downloading Wan-AI/Wan2.2-I2V-A14B-Diffusers to /models/models/Wan-AI/Wan2.2-I2V-A14B-Diffusers ...", flush=True)
+          path = snapshot_download(
+              repo_id="Wan-AI/Wan2.2-I2V-A14B-Diffusers",
+              local_dir="/models/models/Wan-AI/Wan2.2-I2V-A14B-Diffusers",
+              local_dir_use_symlinks=False,
+              max_workers=8,
+          )
+          print(f"DONE Wan2.2-I2V-A14B-Diffusers -> {path} in {time.time()-t0:.1f}s", flush=True)
+          '
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-secret
+              key: HF_TOKEN
+        resources:
+          requests:
+            cpu: "2"
+            memory: 6Gi
+          limits:
+            cpu: "4"
+            memory: 12Gi
+        volumeMounts:
+        - name: model-weights
+          mountPath: /models
+      volumes:
+      - name: model-weights
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: YOUR_GCS_BUCKET
+            mountOptions: "implicit-dirs"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stage-hf-ltx25-bf16
+  namespace: default
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      annotations:
+        gke-gcsfuse/volumes: "true"
+        gke-gcsfuse/memory-limit: "0"
+    spec:
+      serviceAccountName: default
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      restartPolicy: OnFailure
+      containers:
+      - name: downloader
+        image: python:3.11-slim
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          pip install -q -U huggingface_hub filelock
+          python3 -u -c '
+          import filelock, time
+          class DummyLock:
+              def __init__(self, *args, **kwargs): pass
+              def __enter__(self): return self
+              def __exit__(self, *args): pass
+              def acquire(self, *args, **kwargs): pass
+              def release(self, *args, **kwargs): pass
+          filelock.FileLock = DummyLock
+          filelock.SoftFileLock = DummyLock
+          from huggingface_hub import snapshot_download
+          t0 = time.time()
+          print("Staging LTX-2.5 Diffusers configs from Rin247/LTX-2.5-Diffusers ...", flush=True)
+          snapshot_download(
+              repo_id="Rin247/LTX-2.5-Diffusers",
+              local_dir="/models/models/Lightricks/LTX-2.5/diffusers_configs",
+              allow_patterns=["*.json", "*.jinja", "processor/*", "scheduler/*"],
+              max_workers=4,
+          )
+          print("Staging LTX-2.5 22B BF16 weights from comfyicu/LTX-2.5 ...", flush=True)
+          path = snapshot_download(
+              repo_id="comfyicu/LTX-2.5",
+              local_dir="/models/models/Lightricks/LTX-2.5",
+              allow_patterns=["*bf16*", "README.md"],
+              max_workers=6,
+          )
+          print(f"DONE LTX-2.5 BF16 -> {path} in {time.time()-t0:.1f}s", flush=True)
+          '
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-secret
+              key: HF_TOKEN
+        resources:
+          requests:
+            cpu: "1"
+            memory: 4Gi
+          limits:
+            cpu: "4"
+            memory: 12Gi
+        volumeMounts:
+        - name: model-weights
+          mountPath: /models
+      volumes:
+      - name: model-weights
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: YOUR_GCS_BUCKET
+            mountOptions: "implicit-dirs"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stage-hf-ltx23-bf16-fp8
+  namespace: default
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      annotations:
+        gke-gcsfuse/volumes: "true"
+        gke-gcsfuse/memory-limit: "0"
+    spec:
+      serviceAccountName: default
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      restartPolicy: OnFailure
+      containers:
+      - name: downloader
+        image: python:3.11-slim
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          pip install -q -U "huggingface_hub[hf_transfer]" filelock
+          export HF_HUB_ENABLE_HF_TRANSFER=1
+          python3 -u -c '
+          import filelock, time
+          class DummyLock:
+              def __init__(self, *args, **kwargs): pass
+              def __enter__(self): return self
+              def __exit__(self, *args): pass
+              def acquire(self, *args, **kwargs): pass
+              def release(self, *args, **kwargs): pass
+          filelock.FileLock = DummyLock
+          filelock.SoftFileLock = DummyLock
+          from huggingface_hub import snapshot_download
+          t0 = time.time()
+          print("Staging official Lightricks/LTX-2.3 (22B BF16) ...", flush=True)
+          snapshot_download(
+              repo_id="Lightricks/LTX-2.3",
+              local_dir="/models/models/Lightricks/LTX-2.3",
+              allow_patterns=["README.md", "ltx-2.3-22b-dev.safetensors", "ltx-2.3-22b-distilled-1.1.safetensors", "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"],
+              max_workers=6,
+          )
+          print("Staging official Lightricks/LTX-2.3-fp8 (22B FP8 e4m3fn) ...", flush=True)
+          snapshot_download(
+              repo_id="Lightricks/LTX-2.3-fp8",
+              local_dir="/models/models/Lightricks/LTX-2.3-fp8",
+              allow_patterns=["README.md", "ltx-2.3-22b-dev-fp8.safetensors", "ltx-2.3-22b-distilled-fp8.safetensors"],
+              max_workers=6,
+          )
+          print(f"DONE Lightricks/LTX-2.3 BF16 + FP8 in {time.time()-t0:.1f}s", flush=True)
+          '
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-secret
+              key: HF_TOKEN
+        resources:
+          requests:
+            cpu: "2"
+            memory: 6Gi
+          limits:
+            cpu: "4"
+            memory: 12Gi
+        volumeMounts:
+        - name: model-weights
+          mountPath: /models
+      volumes:
+      - name: model-weights
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: YOUR_GCS_BUCKET
+            mountOptions: "implicit-dirs"
+
